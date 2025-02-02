@@ -1,0 +1,13 @@
+[package]
+name = "wgpu_lyon"
+version = "1.0.0"
+edition = "2021"
+description = "wgpu renderer api for lyon tessellation"
+license = "BSD-3-Clause"
+repository = "https://github.com/CalebCouch/wgpu_lyon.git"
+
+
+[dependencies]
+bytemuck = {version="1.16", features=[ "derive" ]}
+lyon_tessellation = "1.0.15"
+wgpu = "22.1.0"
