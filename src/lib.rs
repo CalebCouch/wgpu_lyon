@@ -46,10 +46,9 @@ impl DefaultVertex {
 }
 
 impl Vertex for DefaultVertex {
-    fn constructor() -> impl FillVertexConstructor<DefaultVertex> {
-        DefaultVertexConstructor
-    }
+    type Constructor = DefaultVertexConstructor;
 
+    fn constructor() -> Self::Constructor {DefaultVertexConstructor}
     fn layout() -> VertexBufferLayout<'static> {
         VertexBufferLayout {
             array_stride: std::mem::size_of::<Self>() as BufferAddress,
@@ -76,12 +75,14 @@ impl FillVertexConstructor<DefaultVertex> for DefaultVertexConstructor {
 }
 
 pub trait Vertex: Copy + bytemuck::Pod + bytemuck::Zeroable {
-    fn constructor() -> impl FillVertexConstructor<Self>;
+    type Constructor: FillVertexConstructor<Self>;
+
+    fn constructor() -> Self::Constructor;
     fn layout() -> VertexBufferLayout<'static>;
     fn shader(device: &Device) -> ShaderModule;
 }
 
-pub struct LyonRenderer<V: Vertex> {
+pub struct LyonRenderer<V: Vertex = DefaultVertex> {
     render_pipeline: RenderPipeline,
     vertex_buffer_size: u64,
     vertex_buffer: Buffer,
@@ -159,23 +160,26 @@ impl<V: Vertex> LyonRenderer<V> {
         device: &Device,
         queue: &Queue,
         fill_options: &FillOptions,
-        callback: impl Fn(&mut FillBuilder)
+        callbacks: Vec<impl Fn(&mut FillBuilder)>
     ) {
         self.lyon_buffers.clear();
 
         let mut buffer = BuffersBuilder::new(&mut self.lyon_buffers, V::constructor());
+
         let mut tessellator = FillTessellator::new();
-        let mut builder = tessellator.builder_with_attributes(3, fill_options, &mut buffer);
+        for callback in callbacks {
+            let mut builder = tessellator.builder_with_attributes(3, fill_options, &mut buffer);
 
-        callback(&mut builder);
+            callback(&mut builder);
 
-        builder.build().unwrap();
+            builder.build().unwrap();
+        }
 
         if self.lyon_buffers.vertices.is_empty() || self.lyon_buffers.indices.is_empty() {return;}
 
         let vertices_raw = bytemuck::cast_slice(&self.lyon_buffers.vertices);
         if self.vertex_buffer_size >= vertices_raw.len() as u64 {
-            queue.write_buffer(&self.vertex_buffer, 0, vertices_raw);
+            Self::write_buffer(queue, &self.vertex_buffer, vertices_raw);
         } else {
             let (vertex_buffer, vertex_buffer_size) = Self::create_oversized_buffer(
                 device,
@@ -189,7 +193,7 @@ impl<V: Vertex> LyonRenderer<V> {
 
         let indices_raw = bytemuck::cast_slice(&self.lyon_buffers.indices);
         if self.index_buffer_size >= indices_raw.len() as u64 {
-            queue.write_buffer(&self.index_buffer, 0, indices_raw);
+            Self::write_buffer(queue, &self.index_buffer, indices_raw);
         } else {
             let (index_buffer, index_buffer_size) = Self::create_oversized_buffer(
                 device,
@@ -210,6 +214,14 @@ impl<V: Vertex> LyonRenderer<V> {
         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         render_pass.set_index_buffer(self.index_buffer.slice(..), IndexFormat::Uint16);
         render_pass.draw_indexed(0..self.lyon_buffers.indices.len() as u32, 0, 0..1);
+    }
+
+    fn write_buffer(queue: &Queue, buffer: &Buffer, slice: &[u8]) {
+        let pad: usize = slice.len() % 4;
+        let slice = if pad != 0 {
+            &[slice, &vec![0u8; pad]].concat()
+        } else {slice};
+        queue.write_buffer(buffer, 0, slice);
     }
 
     fn next_copy_buffer_size(size: u64) -> u64 {

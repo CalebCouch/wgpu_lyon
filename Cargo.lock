@@ -961,9 +961,10 @@ dependencies = [
 
 [[package]]
 name = "wgpu_lyon"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "bytemuck",
+ "log",
  "lyon_tessellation",
  "wgpu",
 ]
