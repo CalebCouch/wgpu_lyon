@@ -33,6 +33,8 @@ use lyon_tessellation::{
     VertexBuffers,
 };
 
+type Callback = Box<dyn Fn(&mut FillBuilder)>;
+
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct DefaultVertex {
@@ -160,7 +162,7 @@ impl<V: Vertex> LyonRenderer<V> {
         device: &Device,
         queue: &Queue,
         fill_options: &FillOptions,
-        callbacks: Vec<impl Fn(&mut FillBuilder)>
+        callbacks: Vec<Callback>
     ) {
         self.lyon_buffers.clear();
 
