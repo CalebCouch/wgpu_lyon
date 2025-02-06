@@ -33,18 +33,20 @@ use lyon_tessellation::{
     VertexBuffers,
 };
 
-type Callback = Box<dyn Fn(&mut FillBuilder)>;
+type Callback = Box<dyn Fn(&mut FillBuilder) -> (u32, u32, u32, u32)>;
+type Bound = (u32, u32, u32, u32);
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct DefaultVertex {
     position: [f32; 2],
     color: [f32; 3],
+    z: f32
 }
 
 impl DefaultVertex {
-    const ATTRIBS: [wgpu::VertexAttribute; 2] =
-        wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x3];
+    const ATTRIBS: [wgpu::VertexAttribute; 3] =
+        wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x3, 2 => Float32];
 }
 
 impl Vertex for DefaultVertex {
@@ -68,10 +70,12 @@ impl Vertex for DefaultVertex {
 pub struct DefaultVertexConstructor;
 impl FillVertexConstructor<DefaultVertex> for DefaultVertexConstructor {
     fn new_vertex(&mut self, mut vertex: FillVertex) -> DefaultVertex {
+        let attrs: [f32; 4] = vertex.interpolated_attributes().try_into()
+            .expect("Expected builder attributes to be 3 f32's representing RGB color values. And one f32 representing zindex");
         DefaultVertex{
             position: vertex.position().to_array(),
-            color: vertex.interpolated_attributes().try_into()
-            .expect("Expected builder attributes to be 3 f32's representing RGB color values.")
+            color: [attrs[0], attrs[1], attrs[2]],
+            z: attrs[3]
         }
     }
 }
@@ -91,6 +95,7 @@ pub struct LyonRenderer<V: Vertex = DefaultVertex> {
     index_buffer_size: u64,
     index_buffer: Buffer,
     lyon_buffers: VertexBuffers<V, u16>,
+    slices: Vec<(usize, usize, Bound)>
 }
 
 impl<V: Vertex> LyonRenderer<V> {
@@ -152,6 +157,7 @@ impl<V: Vertex> LyonRenderer<V> {
             index_buffer_size,
             index_buffer,
             lyon_buffers,
+            slices: Vec::new()
         }
     }
 
@@ -166,15 +172,23 @@ impl<V: Vertex> LyonRenderer<V> {
     ) {
         self.lyon_buffers.clear();
 
-        let mut buffer = BuffersBuilder::new(&mut self.lyon_buffers, V::constructor());
+        self.slices = Vec::new();
 
+        let mut index = 0;
+
+        let mut buffer = BuffersBuilder::new(&mut self.lyon_buffers, V::constructor());
         let mut tessellator = FillTessellator::new();
         for callback in callbacks {
-            let mut builder = tessellator.builder_with_attributes(3, fill_options, &mut buffer);
 
-            callback(&mut builder);
+            let mut builder = tessellator.builder_with_attributes(4, fill_options, &mut buffer);
+
+            let bounds = callback(&mut builder);
 
             builder.build().unwrap();
+
+            let buffer_len = buffer.buffers().indices.len();
+            self.slices.push((index, buffer_len, bounds));
+            index = buffer_len;
         }
 
         if self.lyon_buffers.vertices.is_empty() || self.lyon_buffers.indices.is_empty() {return;}
@@ -215,7 +229,10 @@ impl<V: Vertex> LyonRenderer<V> {
         render_pass.set_pipeline(&self.render_pipeline);
         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         render_pass.set_index_buffer(self.index_buffer.slice(..), IndexFormat::Uint16);
-        render_pass.draw_indexed(0..self.lyon_buffers.indices.len() as u32, 0, 0..1);
+        for slice in &self.slices {
+            render_pass.set_scissor_rect(slice.2.0, slice.2.1, slice.2.2, slice.2.3);
+            render_pass.draw_indexed(slice.0 as u32..slice.1 as u32, 0, 0..1);
+        }
     }
 
     fn write_buffer(queue: &Queue, buffer: &Buffer, slice: &[u8]) {
