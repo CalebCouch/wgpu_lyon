@@ -1,27 +1,4 @@
-use wgpu::{
-    PipelineCompilationOptions,
-    RenderPipelineDescriptor,
-    PipelineLayoutDescriptor,
-    COPY_BUFFER_ALIGNMENT,
-    VertexBufferLayout,
-    DepthStencilState,
-    MultisampleState,
-    BufferDescriptor,
-    RenderPipeline,
-    PrimitiveState,
-    VertexStepMode,
-    FragmentState,
-    TextureFormat,
-    BufferAddress,
-    ShaderModule,
-    BufferUsages,
-    IndexFormat,
-    VertexState,
-    RenderPass,
-    Buffer,
-    Device,
-    Queue,
-};
+use wgpu::{PipelineCompilationOptions, RenderPipelineDescriptor, PipelineLayoutDescriptor, COPY_BUFFER_ALIGNMENT, VertexBufferLayout, DepthStencilState, MultisampleState, BufferDescriptor, RenderPipeline, PrimitiveState, VertexStepMode, FragmentState, TextureFormat, BufferAddress, BufferUsages, IndexFormat, VertexState, RenderPass, Buffer, Device, Queue};
 
 use lyon_tessellation::{
     FillVertexConstructor,
@@ -33,26 +10,25 @@ use lyon_tessellation::{
     VertexBuffers,
 };
 
-type Callback = Box<dyn Fn(&mut FillBuilder) -> (u32, u32, u32, u32)>;
 type Bound = (u32, u32, u32, u32);
+
+pub struct Shape {
+    pub constructor: Box<dyn Fn(&mut FillBuilder)>,
+    pub bound: Bound
+}
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct DefaultVertex {
+pub struct Vertex {
     position: [f32; 2],
     color: [f32; 3],
     z: f32
 }
 
-impl DefaultVertex {
+impl Vertex {
     const ATTRIBS: [wgpu::VertexAttribute; 3] =
         wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x3, 2 => Float32];
-}
 
-impl Vertex for DefaultVertex {
-    type Constructor = DefaultVertexConstructor;
-
-    fn constructor() -> Self::Constructor {DefaultVertexConstructor}
     fn layout() -> VertexBufferLayout<'static> {
         VertexBufferLayout {
             array_stride: std::mem::size_of::<Self>() as BufferAddress,
@@ -60,19 +36,15 @@ impl Vertex for DefaultVertex {
             attributes: &Self::ATTRIBS,
         }
     }
-
-    fn shader(device: &Device) -> ShaderModule {
-        device.create_shader_module(wgpu::include_wgsl!("default_shader.wgsl"))
-    }
 }
 
 #[derive(Clone)]
-pub struct DefaultVertexConstructor;
-impl FillVertexConstructor<DefaultVertex> for DefaultVertexConstructor {
-    fn new_vertex(&mut self, mut vertex: FillVertex) -> DefaultVertex {
+pub struct VertexConstructor;
+impl FillVertexConstructor<Vertex> for VertexConstructor {
+    fn new_vertex(&mut self, mut vertex: FillVertex) -> Vertex {
         let attrs: [f32; 4] = vertex.interpolated_attributes().try_into()
             .expect("Expected builder attributes to be 3 f32's representing RGB color values. And one f32 representing zindex");
-        DefaultVertex{
+        Vertex{
             position: vertex.position().to_array(),
             color: [attrs[0], attrs[1], attrs[2]],
             z: attrs[3]
@@ -80,25 +52,17 @@ impl FillVertexConstructor<DefaultVertex> for DefaultVertexConstructor {
     }
 }
 
-pub trait Vertex: Copy + bytemuck::Pod + bytemuck::Zeroable {
-    type Constructor: FillVertexConstructor<Self>;
-
-    fn constructor() -> Self::Constructor;
-    fn layout() -> VertexBufferLayout<'static>;
-    fn shader(device: &Device) -> ShaderModule;
-}
-
-pub struct LyonRenderer<V: Vertex = DefaultVertex> {
+pub struct LyonRenderer {
     render_pipeline: RenderPipeline,
     vertex_buffer_size: u64,
     vertex_buffer: Buffer,
     index_buffer_size: u64,
     index_buffer: Buffer,
-    lyon_buffers: VertexBuffers<V, u16>,
-    slices: Vec<(usize, usize, Bound)>
+    lyon_buffers: VertexBuffers<Vertex, u16>,
+    shape_buffer: Vec<(usize, usize, Bound)>
 }
 
-impl<V: Vertex> LyonRenderer<V> {
+impl LyonRenderer {
     /// Create all unchanging resources here.
     pub fn new(
         device: &Device,
@@ -106,8 +70,7 @@ impl<V: Vertex> LyonRenderer<V> {
         multisample: MultisampleState,
         depth_stencil: Option<DepthStencilState>,
     ) -> Self {
-
-        let shader = V::shader(device);
+        let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
         let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor::default());
         let render_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
             label: None,
@@ -117,7 +80,7 @@ impl<V: Vertex> LyonRenderer<V> {
                 entry_point: "vs_main",
                 compilation_options: PipelineCompilationOptions::default(),
                 buffers: &[
-                    V::layout()
+                    Vertex::layout()
                 ]
             },
             fragment: Some(FragmentState {
@@ -135,7 +98,7 @@ impl<V: Vertex> LyonRenderer<V> {
 
         let vertex_buffer_size = Self::next_copy_buffer_size(4096);
         let vertex_buffer = device.create_buffer(&BufferDescriptor {
-            label: Some("Lyon Vertex Buffer"),
+            label: None,
             size: vertex_buffer_size,
             usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -143,13 +106,13 @@ impl<V: Vertex> LyonRenderer<V> {
 
         let index_buffer_size = Self::next_copy_buffer_size(4096);
         let index_buffer = device.create_buffer(&BufferDescriptor {
-            label: Some("Lyon Index Buffer"),
+            label: None,
             size: index_buffer_size,
             usage: BufferUsages::INDEX | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
-        let lyon_buffers: VertexBuffers<V, u16> = VertexBuffers::new();
+        let lyon_buffers: VertexBuffers<Vertex, u16> = VertexBuffers::new();
         LyonRenderer{
             render_pipeline,
             vertex_buffer_size,
@@ -157,7 +120,7 @@ impl<V: Vertex> LyonRenderer<V> {
             index_buffer_size,
             index_buffer,
             lyon_buffers,
-            slices: Vec::new()
+            shape_buffer: Vec::new()
         }
     }
 
@@ -168,26 +131,22 @@ impl<V: Vertex> LyonRenderer<V> {
         device: &Device,
         queue: &Queue,
         fill_options: &FillOptions,
-        callbacks: Vec<Callback>
+        shapes: Vec<Shape>
     ) {
         self.lyon_buffers.clear();
-
-        self.slices = Vec::new();
+        self.shape_buffer.clear();
 
         let mut index = 0;
 
-        let mut buffer = BuffersBuilder::new(&mut self.lyon_buffers, V::constructor());
+        let mut buffer = BuffersBuilder::new(&mut self.lyon_buffers, VertexConstructor);
         let mut tessellator = FillTessellator::new();
-        for callback in callbacks {
-
+        for shape in shapes {
             let mut builder = tessellator.builder_with_attributes(4, fill_options, &mut buffer);
-
-            let bounds = callback(&mut builder);
-
+            (shape.constructor)(&mut builder);
             builder.build().unwrap();
 
             let buffer_len = buffer.buffers().indices.len();
-            self.slices.push((index, buffer_len, bounds));
+            self.shape_buffer.push((index, buffer_len, shape.bound));
             index = buffer_len;
         }
 
@@ -198,10 +157,7 @@ impl<V: Vertex> LyonRenderer<V> {
             Self::write_buffer(queue, &self.vertex_buffer, vertices_raw);
         } else {
             let (vertex_buffer, vertex_buffer_size) = Self::create_oversized_buffer(
-                device,
-                Some("Lyon Vertex Buffer"),
-                vertices_raw,
-                BufferUsages::VERTEX | BufferUsages::COPY_DST
+                device, None, vertices_raw, BufferUsages::VERTEX | BufferUsages::COPY_DST
             );
             self.vertex_buffer = vertex_buffer;
             self.vertex_buffer_size = vertex_buffer_size;
@@ -212,10 +168,7 @@ impl<V: Vertex> LyonRenderer<V> {
             Self::write_buffer(queue, &self.index_buffer, indices_raw);
         } else {
             let (index_buffer, index_buffer_size) = Self::create_oversized_buffer(
-                device,
-                Some("Lyon Index Buffer"),
-                indices_raw,
-                BufferUsages::INDEX | BufferUsages::COPY_DST
+                device, None, indices_raw, BufferUsages::INDEX | BufferUsages::COPY_DST
             );
             self.index_buffer = index_buffer;
             self.index_buffer_size = index_buffer_size;
@@ -229,9 +182,9 @@ impl<V: Vertex> LyonRenderer<V> {
         render_pass.set_pipeline(&self.render_pipeline);
         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         render_pass.set_index_buffer(self.index_buffer.slice(..), IndexFormat::Uint16);
-        for slice in &self.slices {
-            render_pass.set_scissor_rect(slice.2.0, slice.2.1, slice.2.2, slice.2.3);
-            render_pass.draw_indexed(slice.0 as u32..slice.1 as u32, 0, 0..1);
+        for (start, end, bound) in &self.shape_buffer {
+            render_pass.set_scissor_rect(bound.0, bound.1, bound.2, bound.3);
+            render_pass.draw_indexed(*start as u32..*end as u32, 0, 0..1);
         }
     }
 
